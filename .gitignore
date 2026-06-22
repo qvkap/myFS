@@ -1,0 +1,5 @@
+spermfs
+spermfs_mount_helper
+spermfs.img
+obj/
+*.test
