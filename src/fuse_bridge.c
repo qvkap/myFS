@@ -565,16 +565,101 @@ static void bridge_destroy(void *user_data)
     (void)user_data;
 }
 
+static int bridge_symlink(const char *from, const char *to, void *user_data)
+{
+    (void)user_data;
+    spermfs_context_t *ctx = g_ctx;
+
+    char parent_path[1024], name[256];
+    const char *slash = strrchr(to, '/');
+    if (!slash) return -ENOENT;
+    if (slash == to) strcpy(parent_path, "/");
+    else { memcpy(parent_path, to, slash - to); parent_path[slash - to] = '\0'; }
+    strncpy(name, slash + 1, 255);
+    name[255] = '\0';
+
+    spermfs_inode_t parent;
+    int ret = resolve_path(parent_path, &parent, NULL);
+    if (ret != 0) return ret;
+
+    spermfs_inode_t inode;
+    ret = spermfs_inode_alloc(ctx, &inode, S_IFLNK | 0777);
+    if (ret != SPERMAFS_OK) return -EIO;
+
+    inode.parent_inode = parent.inode_number;
+    strncpy(inode.name, name, SPERMAFS_MAX_NAME_LEN - 1);
+    inode.name[SPERMAFS_MAX_NAME_LEN - 1] = '\0';
+
+    size_t target_len = strlen(from);
+    if (target_len < SPERMAFS_EMBEDDED_MAX) {
+        inode.flags |= SPERMAFS_INODE_EMBEDDED;
+        memcpy(inode.embedded_data, from, target_len);
+    }
+    inode.size = target_len;
+
+    spermfs_journal_begin(ctx);
+    ret = spermfs_inode_write(ctx, &inode);
+    if (ret != SPERMAFS_OK) return -EIO;
+    ret = create_entry(parent.inode_number, name, inode.inode_number);
+    if (ret != SPERMAFS_OK) return -EIO;
+    spermfs_journal_commit(ctx);
+    return 0;
+}
+
+static int bridge_readlink(const char *path, char *buf, size_t size, void *user_data)
+{
+    (void)user_data;
+    spermfs_inode_t inode;
+    int ret = resolve_path(path, &inode, NULL);
+    if (ret != 0) return ret;
+
+    size_t len = inode.size;
+    if (len > size) len = size;
+    if (inode.flags & SPERMAFS_INODE_EMBEDDED)
+        memcpy(buf, inode.embedded_data, len);
+    buf[len] = '\0';
+    return 0;
+}
+
+static int bridge_link(const char *from, const char *to, void *user_data)
+{
+    (void)user_data;
+    spermfs_context_t *ctx = g_ctx;
+
+    spermfs_inode_t inode;
+    int ret = resolve_path(from, &inode, NULL);
+    if (ret != 0) return ret;
+
+    char parent_path[1024], name[256];
+    const char *slash = strrchr(to, '/');
+    if (!slash) return -ENOENT;
+    if (slash == to) strcpy(parent_path, "/");
+    else { memcpy(parent_path, to, slash - to); parent_path[slash - to] = '\0'; }
+    strncpy(name, slash + 1, 255);
+    name[255] = '\0';
+
+    spermfs_inode_t parent;
+    uint64_t parent_num;
+    ret = resolve_path(parent_path, &parent, &parent_num);
+    if (ret != 0) return ret;
+
+    spermfs_journal_begin(ctx);
+    ret = create_entry(parent.inode_number, name, inode.inode_number);
+    if (ret != SPERMAFS_OK) return -EIO;
+    spermfs_journal_commit(ctx);
+    return 0;
+}
+
 static const struct fuse_dev_ops bridge_ops = {
     .getattr   = bridge_getattr,
-    .readlink  = NULL,
+    .readlink  = bridge_readlink,
     .mknod     = bridge_mknod,
     .mkdir     = bridge_mkdir,
     .unlink    = bridge_unlink,
     .rmdir     = bridge_rmdir,
-    .symlink   = NULL,
+    .symlink   = bridge_symlink,
     .rename    = bridge_rename,
-    .link      = NULL,
+    .link      = bridge_link,
     .chmod     = NULL,
     .chown     = NULL,
     .truncate  = bridge_truncate,

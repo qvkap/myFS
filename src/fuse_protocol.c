@@ -768,6 +768,85 @@ int fuse_dev_loop(struct fuse_dev_ctx *ctx, const struct fuse_dev_ops *ops)
             break;
         }
 
+        case FUSE_SYMLINK: {
+            /* FUSE_SYMLINK: no struct, just name\0target\0 */
+            char *name = get_path(inhdr, arg);
+            if (!name) { reply_err(ctx, inhdr->unique, ENOMEM); break; }
+            char *target = name + strlen(name) + 1;
+            char *parent_path = nodeid_to_path(inhdr->nodeid);
+            if (!parent_path) { free(name); reply_err(ctx, inhdr->unique, ENOMEM); break; }
+            size_t plen = strlen(parent_path);
+            int need_slash = (plen > 0 && parent_path[plen-1] != '/');
+            path = malloc(plen + need_slash + strlen(name) + 1);
+            if (!path) { free(name); free(parent_path); reply_err(ctx, inhdr->unique, ENOMEM); break; }
+            sprintf(path, "%s%s%s", parent_path, need_slash ? "/" : "", name);
+            free(name);
+            free(parent_path);
+
+            ret = ops->symlink ? ops->symlink(target, path, ctx->user_data) : -ENOSYS;
+            if (ret == 0) {
+                memset(&st, 0, sizeof(st));
+                ops->getattr(path, &st, ctx->user_data);
+                reply_entry(ctx, inhdr->unique, &st, 0, st.st_ino, NULL);
+            } else {
+                reply_err(ctx, inhdr->unique, -ret);
+            }
+            free(path);
+            break;
+        }
+
+        case FUSE_READLINK: {
+            path = nodeid_to_path(inhdr->nodeid);
+            if (!path) { reply_err(ctx, inhdr->unique, ENOMEM); break; }
+
+            char linkbuf[1024 + 1];
+            ret = ops->readlink ? ops->readlink(path, linkbuf, 1024, ctx->user_data) : -ENOSYS;
+            if (ret == 0) {
+                size_t link_len = strlen(linkbuf);
+                char rep[sizeof(struct fuse_out_header) + link_len + 1];
+                struct fuse_out_header *ro = (struct fuse_out_header *)rep;
+                ro->len = sizeof(rep);
+                ro->unique = inhdr->unique;
+                ro->error = 0;
+                memcpy(rep + sizeof(*ro), linkbuf, link_len + 1);
+                if (write(ctx->fd, rep, sizeof(rep)) != (ssize_t)sizeof(rep))
+                    perror("SPERMAFS: write to fuse device");
+            } else {
+                reply_err(ctx, inhdr->unique, -ret);
+            }
+            free(path);
+            break;
+        }
+
+        case FUSE_LINK: {
+            struct fuse_link_in *li = (struct fuse_link_in *)arg;
+            char *name = get_path(inhdr, arg + sizeof(*li));
+            if (!name) { reply_err(ctx, inhdr->unique, ENOMEM); break; }
+            char *old_path = nodeid_to_path(li->oldnodeid);
+            if (!old_path) { free(name); reply_err(ctx, inhdr->unique, ENOMEM); break; }
+            char *parent_path = nodeid_to_path(inhdr->nodeid);
+            if (!parent_path) { free(old_path); free(name); reply_err(ctx, inhdr->unique, ENOMEM); break; }
+            size_t plen = strlen(parent_path);
+            int need_slash = (plen > 0 && parent_path[plen-1] != '/');
+            path = malloc(plen + need_slash + strlen(name) + 1);
+            if (!path) { free(old_path); free(parent_path); free(name); reply_err(ctx, inhdr->unique, ENOMEM); break; }
+            sprintf(path, "%s%s%s", parent_path, need_slash ? "/" : "", name);
+            free(name);
+            free(parent_path);
+
+            ret = ops->link ? ops->link(old_path, path, ctx->user_data) : -ENOSYS;
+            free(old_path);
+            if (ret == 0) {
+                memset(&st, 0, sizeof(st));
+                ops->getattr(path, &st, ctx->user_data);
+                reply_entry(ctx, inhdr->unique, &st, 0, st.st_ino, NULL);
+            } else {
+                reply_err(ctx, inhdr->unique, -ret);
+            }
+            free(path);
+            break;
+        }
+
         case FUSE_UNLINK: {
             char *name = get_path(inhdr, arg);
             if (!name) { reply_err(ctx, inhdr->unique, ENOMEM); break; }
