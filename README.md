@@ -1,4 +1,4 @@
-# SPERMAFS
+# myFS
 
 **S**ecure **P**erformance **E**nhanced **R**eliable **M**odular **A**rchive **F**ile **S**ystem
 
@@ -10,7 +10,7 @@
 
 ## Overview
 
-SPERMAFS is a userspace filesystem implemented via FUSE with:
+myFS is a userspace filesystem implemented via FUSE with:
 
 - **B+Tree directory indexing** — fast lookups in large directories (order 128)
 - **Copy-on-Write** — per-block clone-on-write for snapshots
