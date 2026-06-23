@@ -566,10 +566,47 @@ int fuse_dev_loop(struct fuse_dev_ctx *ctx, const struct fuse_dev_ops *ops)
 
         case FUSE_SETATTR: {
             struct fuse_setattr_in *si = (struct fuse_setattr_in *)arg;
-            (void)si;
 
             path = nodeid_to_path(inhdr->nodeid);
             if (!path) { reply_err(ctx, inhdr->unique, ENOMEM); break; }
+
+            /* Apply attribute changes */
+            if (si->valid & FATTR_MODE) {
+                if (ops->chmod) ops->chmod(path, si->mode, ctx->user_data);
+            }
+            if (si->valid & (FATTR_UID | FATTR_GID)) {
+                if (ops->chown) ops->chown(path,
+                    (si->valid & FATTR_UID) ? si->uid : (uid_t)-1,
+                    (si->valid & FATTR_GID) ? si->gid : (gid_t)-1,
+                    ctx->user_data);
+            }
+            if (si->valid & FATTR_SIZE) {
+                if (ops->truncate) ops->truncate(path, si->size, ctx->user_data);
+            }
+            if (si->valid & FATTR_ATIME || si->valid & FATTR_MTIME) {
+                if (ops->utimens) {
+                    struct timespec tv[2];
+                    if (si->valid & FATTR_ATIME_NOW) {
+                        clock_gettime(CLOCK_REALTIME, &tv[0]);
+                    } else if (si->valid & FATTR_ATIME) {
+                        tv[0].tv_sec = si->atime;
+                        tv[0].tv_nsec = si->atimensec;
+                    } else {
+                        tv[0].tv_sec = 0;
+                        tv[0].tv_nsec = UTIME_OMIT;
+                    }
+                    if (si->valid & FATTR_MTIME_NOW) {
+                        clock_gettime(CLOCK_REALTIME, &tv[1]);
+                    } else if (si->valid & FATTR_MTIME) {
+                        tv[1].tv_sec = si->mtime;
+                        tv[1].tv_nsec = si->mtimensec;
+                    } else {
+                        tv[1].tv_sec = 0;
+                        tv[1].tv_nsec = UTIME_OMIT;
+                    }
+                    ops->utimens(path, tv, ctx->user_data);
+                }
+            }
 
             memset(&st, 0, sizeof(st));
             ret = ops->getattr ? ops->getattr(path, &st, ctx->user_data) : -ENOSYS;
@@ -780,10 +817,15 @@ int fuse_dev_loop(struct fuse_dev_ctx *ctx, const struct fuse_dev_ops *ops)
             path = malloc(plen + need_slash + strlen(name) + 1);
             if (!path) { free(name); free(parent_path); reply_err(ctx, inhdr->unique, ENOMEM); break; }
             sprintf(path, "%s%s%s", parent_path, need_slash ? "/" : "", name);
-            free(name);
             free(parent_path);
 
-            ret = ops->symlink ? ops->symlink(target, path, ctx->user_data) : -ENOSYS;
+            /* Copy target before freeing name */
+            char target_buf[1024];
+            strncpy(target_buf, target, sizeof(target_buf) - 1);
+            target_buf[sizeof(target_buf) - 1] = '\0';
+            free(name);
+
+            ret = ops->symlink ? ops->symlink(target_buf, path, ctx->user_data) : -ENOSYS;
             if (ret == 0) {
                 memset(&st, 0, sizeof(st));
                 ops->getattr(path, &st, ctx->user_data);

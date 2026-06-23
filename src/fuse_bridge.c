@@ -248,7 +248,12 @@ static int bridge_unlink(const char *path, void *user_data)
 
     spermfs_journal_begin(ctx);
     remove_entry(parent.inode_number, name);
-    spermfs_inode_free(ctx, inode.inode_number);
+    if (inode.link_count > 1) {
+        inode.link_count--;
+        spermfs_inode_write(ctx, &inode);
+    } else {
+        spermfs_inode_free(ctx, inode.inode_number);
+    }
     spermfs_journal_commit(ctx);
     return 0;
 }
@@ -565,6 +570,31 @@ static void bridge_destroy(void *user_data)
     (void)user_data;
 }
 
+static int bridge_chmod(const char *path, mode_t mode, void *user_data)
+{
+    (void)user_data;
+    spermfs_context_t *ctx = g_ctx;
+    spermfs_inode_t inode;
+    int ret = resolve_path(path, &inode, NULL);
+    if (ret != 0) return ret;
+    inode.mode = mode;
+    inode.ctime = spermfs_time_ns();
+    return spermfs_inode_write(ctx, &inode) == SPERMAFS_OK ? 0 : -EIO;
+}
+
+static int bridge_chown(const char *path, uid_t uid, gid_t gid, void *user_data)
+{
+    (void)user_data;
+    spermfs_context_t *ctx = g_ctx;
+    spermfs_inode_t inode;
+    int ret = resolve_path(path, &inode, NULL);
+    if (ret != 0) return ret;
+    inode.uid = uid;
+    inode.gid = gid;
+    inode.ctime = spermfs_time_ns();
+    return spermfs_inode_write(ctx, &inode) == SPERMAFS_OK ? 0 : -EIO;
+}
+
 static int bridge_symlink(const char *from, const char *to, void *user_data)
 {
     (void)user_data;
@@ -639,11 +669,14 @@ static int bridge_link(const char *from, const char *to, void *user_data)
     name[255] = '\0';
 
     spermfs_inode_t parent;
-    uint64_t parent_num;
-    ret = resolve_path(parent_path, &parent, &parent_num);
+    ret = resolve_path(parent_path, &parent, NULL);
     if (ret != 0) return ret;
 
+    inode.link_count++;
+
     spermfs_journal_begin(ctx);
+    ret = spermfs_inode_write(ctx, &inode);
+    if (ret != SPERMAFS_OK) return -EIO;
     ret = create_entry(parent.inode_number, name, inode.inode_number);
     if (ret != SPERMAFS_OK) return -EIO;
     spermfs_journal_commit(ctx);
@@ -660,8 +693,8 @@ static const struct fuse_dev_ops bridge_ops = {
     .symlink   = bridge_symlink,
     .rename    = bridge_rename,
     .link      = bridge_link,
-    .chmod     = NULL,
-    .chown     = NULL,
+    .chmod     = bridge_chmod,
+    .chown     = bridge_chown,
     .truncate  = bridge_truncate,
     .open      = bridge_open,
     .read      = bridge_read,
